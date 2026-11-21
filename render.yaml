@@ -1,0 +1,24 @@
+services:
+  - type: worker
+    name: el-ultimo-baile-gateway-worker
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_GUILD_ID
+        value: "1500391414335279104"
+      - key: WELCOME_CHANNEL_ID
+        sync: false
+      - key: GOODBYE_CHANNEL_ID
+        sync: false
+      - key: AUTO_ROLE_IDS
+        sync: false
+      - key: LOG_CHANNEL_ID
+        sync: false
+      - key: WELCOME_MESSAGE
+        value: "¡Bienvenido/a {user} a El Último Baile RP!"
