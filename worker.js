@@ -57,6 +57,4 @@ async function pollStreams() {
 }
 
 client.on("error", error => console.error("Discord client error:", error));
-client.once("ready", () => {
-  setInterval(() => pollStreams().catch(error => console.error("Error en polling de streams:", error.message)), 60000);
-});\nprocess.on("SIGTERM", () => { client.destroy(); process.exit(0); });\nprocess.on("SIGINT", () => { client.destroy(); process.exit(0); });\nclient.login(token);\n
+\nprocess.on("SIGTERM", () => { client.destroy(); process.exit(0); });\nprocess.on("SIGINT", () => { client.destroy(); process.exit(0); });\nclient.login(token);\n
