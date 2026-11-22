@@ -1,85 +1,195 @@
-import { Client, GatewayIntentBits, Partials } from "discord.js";\n\nconst token = process.env.DISCORD_BOT_TOKEN;\nconst guildId = process.env.DISCORD_GUILD_ID;\nconst welcomeChannelId = process.env.WELCOME_CHANNEL_ID || "";\nconst goodbyeChannelId = process.env.GOODBYE_CHANNEL_ID || welcomeChannelId;\nconst autoRoleIds = (process.env.AUTO_ROLE_IDS || "").split(",").map(v => v.trim()).filter(Boolean);\nconst logChannelId = process.env.LOG_CHANNEL_ID || "";\nconst welcomeMessage = process.env.WELCOME_MESSAGE || "¡Bienvenido/a {user} a El Último Baile RP!";
-const streamConfigUrl = process.env.STREAM_CONFIG_URL || "";
-const streamSyncSecret = process.env.STREAM_SYNC_SECRET || "";
-const twitchClientId = process.env.TWITCH_CLIENT_ID || "";
-const twitchClientSecret = process.env.TWITCH_CLIENT_SECRET || "";
-let streamState = { provider: "", streamer: "", channelId: "", message: "", lastLive: false };
-let runtimeConfig = { welcome: {}, autoroles: {}, logs: {}, streams: {} };\n\nif (!token) throw new Error("DISCORD_BOT_TOKEN is required.");\nif (!guildId) throw new Error("DISCORD_GUILD_ID is required.");\n\nconst client = new Client({\n  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages],\n  partials: [Partials.GuildMember],\n});\n\nfunction renderMessage(template, member) {\n  return template.replaceAll("{user}", `<@${member.id}>`).replaceAll("{username}", member.user.username).replaceAll("{server}", member.guild.name);\n}\n\nasync function sendLog(guild, title, description) {\n  if (!logChannelId) return;\n  const channel = await guild.channels.fetch(logChannelId).catch(() => null);\n  if (!channel?.isTextBased()) return;\n  await channel.send({ embeds: [{ title, description, color: 0xe07a2f, timestamp: new Date().toISOString(), footer: { text: "El Último Baile RP • Gateway" } }] }).catch(() => {});\n}\n\nclient.once("ready", async () => {\n  console.log(`Gateway conectado como ${client.user?.tag}`);\n  const guild = await client.guilds.fetch(guildId).catch(() => null);\n  if (!guild) { console.error("Guild no encontrada:", guildId); return; }\n  console.log(`Servidor conectado: ${guild.name} (${guild.id})`);\n});\n\nclient.on("guildMemberAdd", async member => {\n  if (member.guild.id !== guildId) return;\n  for (const roleId of autoRoleIds) await member.roles.add(roleId).catch(error => console.error(`No se pudo asignar el rol ${roleId}:`, error.message));\n  if (welcomeChannelId) {\n    const channel = await member.guild.channels.fetch(welcomeChannelId).catch(() => null);\n    if (channel?.isTextBased()) {\n      const avatar = member.displayAvatarURL({ extension: "png", size: 256 });\n      await channel.send({\n        content: renderMessage(welcomeMessage, member),\n        embeds: [{ title: "👋 ¡Bienvenido/a a El Último Baile RP!", description: `**${member.user.globalName || member.user.username}** ya forma parte del servidor.\n\nDisfruta tu experiencia de roleplay.`, color: 0xe07a2f, thumbnail: { url: avatar }, footer: { text: "El Último Baile RP" }, timestamp: new Date().toISOString() }]\n      }).catch(error => console.error("Error enviando bienvenida:", error.message));\n    }\n  }\n  await sendLog(member.guild, "🟢 Miembro entró", `<@${member.id}> (${member.user.tag}) entró al servidor.`);\n});\n\nclient.on("guildMemberRemove", async member => {\n  if (member.guild.id !== guildId) return;\n  if (goodbyeChannelId) {\n    const channel = await member.guild.channels.fetch(goodbyeChannelId).catch(() => null);\n    if (channel?.isTextBased()) await channel.send({ embeds: [{ title: "👋 Miembro salió", description: `**${member.user.globalName || member.user.username}** ya no forma parte del servidor.`, color: 0xe07a2f, thumbnail: { url: member.displayAvatarURL({ extension: "png", size: 256 }) }, footer: { text: "El Último Baile RP" }, timestamp: new Date().toISOString() }] }).catch(error => console.error("Error enviando despedida:", error.message));\n  }\n  await sendLog(member.guild, "🔴 Miembro salió", `**${member.user.tag}** salió del servidor.`);\n});\n\nasync function loadStreamConfig() {
-  if (!streamConfigUrl || !streamSyncSecret) return;
-  try {
-    const response = await fetch(streamConfigUrl, { headers: { Authorization: "Bearer " + streamSyncSecret } });
-    if (!response.ok) return;
-    const data = await response.json();
-    if (data?.welcome || data?.autoroles || data?.logs) runtimeConfig = data;
-    if (data?.streams?.enabled && data.streams.provider && data.streams.streamer && data.streams.channelId) {
-      streamState = {
-        provider: String(data.streams.provider),
-        streamer: String(data.streams.streamer),
-        channelId: String(data.streams.channelId),
-        message: String(data.streams.message || "🔴 {streamer} está en directo: {url}"),
-        lastLive: streamState.provider === String(data.provider) && streamState.streamer === String(data.streamer) ? streamState.lastLive : false,
-      };
-    }
-  } catch (error) {
-    console.error("Error sincronizando streams:", error.message);
-  }
+import http from "node:http";
+import { Client, GatewayIntentBits, Partials } from "discord.js";
+
+const token = process.env.DISCORD_BOT_TOKEN;
+const guildId = process.env.DISCORD_GUILD_ID;
+
+if (!token) throw new Error("DISCORD_BOT_TOKEN is required.");
+if (!guildId) throw new Error("DISCORD_GUILD_ID is required.");
+
+const welcomeChannelId = process.env.WELCOME_CHANNEL_ID || "";
+const goodbyeChannelId = process.env.GOODBYE_CHANNEL_ID || welcomeChannelId;
+const autoRoleIds = (process.env.AUTO_ROLE_IDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const logChannelId = process.env.LOG_CHANNEL_ID || "";
+const welcomeMessage =
+  process.env.WELCOME_MESSAGE || "¡Bienvenido/a {user} a El Último Baile RP!";
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+  ],
+  partials: [Partials.GuildMember],
+});
+
+function renderMessage(template, member) {
+  return template
+    .replaceAll("{user}", `<@${member.id}>`)
+    .replaceAll("{username}", member.user.username)
+    .replaceAll("{server}", member.guild.name);
 }
 
-async function applyRuntimeConfig(guild) {
-  const welcome = runtimeConfig.welcome || {};
-  const auto = runtimeConfig.autoroles || {};
-  if (welcome.enabled && welcome.channelId) {
-    client.removeAllListeners("guildMemberAdd");
-    client.on("guildMemberAdd", async member => {
-      const message = String(welcome.message || "¡Bienvenido/a {user} a El Último Baile RP!")
-        .replaceAll("{user}", "<@" + member.id + ">")
-        .replaceAll("{username}", member.user.username);
-      const channel = await guild.channels.fetch(String(welcome.channelId)).catch(() => null);
-      if (channel?.isTextBased()) await channel.send({ content: message }).catch(() => {});
-      for (const roleId of Array.isArray(auto.roleIds) ? auto.roleIds : []) {
-        await member.roles.add(String(roleId)).catch(() => {});
-      }
-      if (runtimeConfig.logs?.enabled && runtimeConfig.logs.channelId) {
-        const log = await guild.channels.fetch(String(runtimeConfig.logs.channelId)).catch(() => null);
-        if (log?.isTextBased()) await log.send({ content: "🟢 Entrada: " + member.user.username + " (" + member.id + ")" }).catch(() => {});
-      }
-    });
-  }
+async function sendLog(guild, title, description) {
+  if (!logChannelId) return;
+  const channel = await guild.channels.fetch(logChannelId).catch(() => null);
+  if (!channel?.isTextBased()) return;
+
+  await channel
+    .send({
+      embeds: [
+        {
+          title,
+          description,
+          color: 0xe07a2f,
+          timestamp: new Date().toISOString(),
+          footer: { text: "El Último Baile RP • Gateway" },
+        },
+      ],
+    })
+    .catch(() => {});
 }
 
-async function checkTwitch(guild) {
-  if (!twitchClientId || !twitchClientSecret || streamState.provider.toLowerCase() !== "twitch") return;
-  const tokenResponse = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: twitchClientId, client_secret: twitchClientSecret, grant_type: "client_credentials" }),
-  });
-  if (!tokenResponse.ok) return;
-  const tokenData = await tokenResponse.json();
-  const response = await fetch("https://api.twitch.tv/helix/streams?user_login=" + encodeURIComponent(streamState.streamer), {
-    headers: { "Client-ID": twitchClientId, Authorization: "Bearer " + tokenData.access_token },
-  });
-  if (!response.ok) return;
-  const data = await response.json();
-  const live = Array.isArray(data?.data) && data.data.length > 0;
-  if (live && !streamState.lastLive) {
-    const channel = await guild.channels.fetch(streamState.channelId).catch(() => null);
-    if (channel?.isTextBased()) {
-      const url = "https://twitch.tv/" + encodeURIComponent(streamState.streamer);
-      const content = streamState.message.replaceAll("{streamer}", streamState.streamer).replaceAll("{url}", url);
-      await channel.send({ content, embeds: [{ title: "🔴 Stream en directo", description: "@" + streamState.streamer + " está en directo en Twitch.", url, color: 0xe07a2f, timestamp: new Date().toISOString(), footer: { text: "El Último Baile RP • Streams" } }] }).catch(error => console.error("Error enviando aviso de stream:", error.message));
-    }
-  }
-  streamState.lastLive = live;
-}
+client.once("ready", async () => {
+  console.log(`Gateway conectado como ${client.user?.tag}`);
 
-async function pollStreams() {
   const guild = await client.guilds.fetch(guildId).catch(() => null);
-  if (!guild) return;
-  await loadStreamConfig();
-  await applyRuntimeConfig(guild);
-  await checkTwitch(guild);
-}
+  if (!guild) {
+    console.error("Guild no encontrada:", guildId);
+    return;
+  }
 
-client.on("error", error => console.error("Discord client error:", error));
-\nprocess.on("SIGTERM", () => { client.destroy(); process.exit(0); });\nprocess.on("SIGINT", () => { client.destroy(); process.exit(0); });\nclient.login(token);\n
+  console.log(`Servidor conectado: ${guild.name} (${guild.id})`);
+});
+
+client.on("guildMemberAdd", async (member) => {
+  if (member.guild.id !== guildId) return;
+
+  for (const roleId of autoRoleIds) {
+    await member.roles
+      .add(roleId)
+      .then(() => console.log(`Rol ${roleId} asignado a ${member.user.tag}`))
+      .catch((error) =>
+        console.error(`No se pudo asignar el rol ${roleId}:`, error.message)
+      );
+  }
+
+  if (welcomeChannelId) {
+    const channel = await member.guild.channels
+      .fetch(welcomeChannelId)
+      .catch(() => null);
+
+    if (channel?.isTextBased()) {
+      const avatar = member.displayAvatarURL({
+        extension: "png",
+        size: 256,
+      });
+
+      await channel
+        .send({
+          content: renderMessage(welcomeMessage, member),
+          embeds: [
+            {
+              title: "👋 ¡Bienvenido/a a El Último Baile RP!",
+              description: `**${member.user.globalName || member.user.username}** ya forma parte del servidor.\n\nDisfruta tu experiencia de roleplay.`,
+              color: 0xe07a2f,
+              thumbnail: { url: avatar },
+              footer: { text: "El Último Baile RP" },
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        })
+        .catch((error) =>
+          console.error("Error enviando bienvenida:", error.message)
+        );
+    }
+  }
+
+  await sendLog(
+    member.guild,
+    "🟢 Miembro entró",
+    `<@${member.id}> (${member.user.tag}) entró al servidor.`
+  );
+});
+
+client.on("guildMemberRemove", async (member) => {
+  if (member.guild.id !== guildId) return;
+
+  if (goodbyeChannelId) {
+    const channel = await member.guild.channels
+      .fetch(goodbyeChannelId)
+      .catch(() => null);
+
+    if (channel?.isTextBased()) {
+      await channel
+        .send({
+          embeds: [
+            {
+              title: "👋 Miembro salió",
+              description: `**${member.user.globalName || member.user.username}** ya no forma parte del servidor.`,
+              color: 0xe07a2f,
+              thumbnail: {
+                url: member.displayAvatarURL({
+                  extension: "png",
+                  size: 256,
+                }),
+              },
+              footer: { text: "El Último Baile RP" },
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        })
+        .catch((error) =>
+          console.error("Error enviando despedida:", error.message)
+        );
+    }
+  }
+
+  await sendLog(
+    member.guild,
+    "🔴 Miembro salió",
+    `**${member.user.tag}** salió del servidor.`
+  );
+});
+
+client.on("error", (error) => {
+  console.error("Discord client error:", error);
+});
+
+process.on("SIGTERM", () => {
+  client.destroy();
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  client.destroy();
+  process.exit(0);
+});
+
+// Tiny HTTP health endpoint so the Render web service can monitor the process.
+const port = Number(process.env.PORT || 10000);
+http
+  .createServer((request, response) => {
+    if (request.url === "/health") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        gateway: client.isReady(),
+      }));
+      return;
+    }
+
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("El Último Baile RP Gateway activo.");
+  })
+  .listen(port, "0.0.0.0", () => {
+    console.log(`Health server escuchando en :${port}`);
+  });
+
+client.login(token).catch((error) => {
+  console.error("No se pudo conectar al Discord Gateway:", error.message);
+  process.exit(1);
+});
